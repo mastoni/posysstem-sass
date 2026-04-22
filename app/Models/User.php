@@ -25,6 +25,8 @@ class User extends Authenticatable implements FilamentUser
         'email',
         'password',
         'role',
+        'owner_id',
+        'branch_id',
         'store_name',
         'store_type',
         'store_address',
@@ -33,6 +35,21 @@ class User extends Authenticatable implements FilamentUser
         'billing_customer_id',
         'is_setup_completed'
     ];
+
+    public function owner(): \Illuminate\Database\Eloquent\Relations\BelongsTo
+    {
+        return $this->belongsTo(User::class, 'owner_id');
+    }
+
+    public function cashiers(): \Illuminate\Database\Eloquent\Relations\HasMany
+    {
+        return $this->hasMany(User::class, 'owner_id');
+    }
+
+    public function branch(): \Illuminate\Database\Eloquent\Relations\BelongsTo
+    {
+        return $this->belongsTo(Branch::class);
+    }
 
     /**
      * The attributes that should be hidden for serialization.

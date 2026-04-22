@@ -31,6 +31,9 @@ class TenantResource extends Resource
                 TextInput::make('email')
                     ->email()
                     ->required(),
+                TextInput::make('phone')
+                    ->label('WhatsApp/Telepon')
+                    ->required(),
                 TextInput::make('password')
                     ->password()
                     ->required(fn ($record) => $record === null)
@@ -40,9 +43,17 @@ class TenantResource extends Resource
                         'superadmin' => 'Super Admin',
                         'tenant' => 'Tenant (Penyewa)',
                     ])
+                    ->default('tenant')
                     ->required(),
-                TextInput::make('store_name'),
-                TextInput::make('store_type'),
+                TextInput::make('store_name')
+                    ->label('Nama Toko/Bisnis'),
+                TextInput::make('store_type')
+                    ->label('Jenis Usaha'),
+                TextInput::make('store_address')
+                    ->label('Alamat Bisnis'),
+                TextInput::make('billing_customer_id')
+                    ->label('Billing Sembok ID')
+                    ->placeholder('Kosongkan jika penyewa mandiri'),
             ]);
     }
 
@@ -51,19 +62,33 @@ class TenantResource extends Resource
         return $table
             ->columns([
                 TextColumn::make('name')
+                    ->label('Nama Pemilik')
                     ->searchable(),
                 TextColumn::make('email')
+                    ->searchable(),
+                TextColumn::make('phone')
+                    ->label('WA')
                     ->searchable(),
                 TextColumn::make('role')
                     ->badge()
                     ->color(fn (string $state): string => match ($state) {
                         'superadmin' => 'danger',
                         'tenant' => 'success',
+                        default => 'gray'
                     }),
                 TextColumn::make('store_name')
-                    ->label('Nama Toko'),
-                TextColumn::make('internet_package')
-                    ->label('Paket Sembok'),
+                    ->label('Bisnis')
+                    ->searchable(),
+                TextColumn::make('billing_customer_id')
+                    ->label('Sembok ID')
+                    ->badge()
+                    ->color('info')
+                    ->placeholder('Independent'),
+                TextColumn::make('is_setup_completed')
+                    ->label('Status Setup')
+                    ->formatStateUsing(fn ($state) => $state ? '✅ Lengkap' : '⏳ Belum')
+                    ->badge()
+                    ->color(fn ($state) => $state ? 'success' : 'warning'),
             ])
             ->filters([
                 //

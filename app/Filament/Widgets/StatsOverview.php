@@ -4,6 +4,8 @@ namespace App\Filament\Widgets;
 
 use App\Models\Order;
 use App\Models\Product;
+use App\Models\User;
+use App\Services\ReportService;
 use Filament\Widgets\StatsOverviewWidget as BaseWidget;
 use Filament\Widgets\StatsOverviewWidget\Stat;
 
@@ -12,24 +14,32 @@ class StatsOverview extends BaseWidget
     protected function getStats(): array
     {
         $user = auth()->user();
-        $userId = $user->id;
+        if ($user->role === 'superadmin') {
+            return [
+                Stat::make('Total Tenant', User::where('role', 'tenant')->count())
+                    ->description('Penyewa aktif')
+                    ->descriptionIcon('heroicon-m-user-group')
+                    ->color('success'),
+                Stat::make('Total Transaksi PPOB', \App\Models\PpobTransaction::count())
+                    ->color('info'),
+            ];
+        }
+
+        $reportService = new ReportService();
+        $summary = $reportService->getProfitLossSummary($user->id);
 
         return [
-            Stat::make('Bisnis Anda', $user->store_name)
-                ->description($user->store_type)
-                ->descriptionIcon('heroicon-m-building-storefront')
-                ->color('primary'),
-            Stat::make('Total Produk', Product::where('user_id', $userId)->count())
-                ->description('Jumlah produk di toko Anda')
-                ->descriptionIcon('heroicon-m-shopping-bag')
-                ->color('success'),
-            Stat::make('Total Pesanan', Order::where('user_id', $userId)->count())
-                ->description('Total transaksi yang masuk')
-                ->descriptionIcon('heroicon-m-shopping-cart')
-                ->color('info'),
-            Stat::make('Total Pendapatan', 'Rp ' . number_format(Order::where('user_id', $userId)->sum('total_amount'), 0, ',', '.'))
-                ->description('Total omzet toko Anda')
+            Stat::make('Pendapatan Bulan Ini', 'Rp ' . number_format($summary['revenue'], 0, ',', '.'))
+                ->description('Total omzet kotor')
                 ->descriptionIcon('heroicon-m-banknotes')
+                ->color('success'),
+            Stat::make('Laba Kotor', 'Rp ' . number_format($summary['profit'], 0, ',', '.'))
+                ->description('Omzet - Modal')
+                ->descriptionIcon('heroicon-m-presentation-chart-line')
+                ->color('info'),
+            Stat::make('Total Produk', Product::count())
+                ->description('Varian barang')
+                ->descriptionIcon('heroicon-m-shopping-bag')
                 ->color('warning'),
         ];
     }
