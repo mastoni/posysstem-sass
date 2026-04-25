@@ -26,25 +26,45 @@ class PosInternalApiController extends Controller
         if (!hash_equals($expectedSignature, $signature)) return null;
 
         $email = $phone . '@sembok.id';
-        $user = User::where('email', $email)->first();
         
-        // Auto-create user if signature is valid but user doesn't exist yet
-        if (!$user) {
-            $user = User::create([
+        // Use firstOrCreate to prevent race conditions and handle duplicate entry errors
+        $user = User::firstOrCreate(
+            ['email' => $email],
+            [
                 'name' => $request->header('X-User-Name', 'Pemilik Toko'),
-                'email' => $email,
                 'password' => \Illuminate\Support\Facades\Hash::make(\Illuminate\Support\Str::random(24)),
-                'role' => 'tenant', // Changed from 'user' to 'tenant'
+                'role' => 'tenant',
                 'store_name' => $request->header('X-Store-Name', 'Toko Saya'),
                 'billing_customer_id' => $request->header('X-Customer-ID'),
                 'is_setup_completed' => true
-            ]);
-        }
+            ]
+        );
 
         // IMPORTANT: Login the user so Global Scopes can detect the tenant
         auth()->login($user);
 
         return $user;
+    }
+
+    private function resolveBranchId(Request $request, $user)
+    {
+        $branchId = $user->role === 'cashier' ? $user->branch_id : $request->input('branch_id');
+        
+        if (!$branchId && $user->role === 'tenant') {
+            $branch = \App\Models\Branch::where('user_id', $user->id)->first();
+            if (!$branch) {
+                $branch = \App\Models\Branch::create([
+                    'user_id' => $user->id,
+                    'name' => 'Cabang Utama',
+                    'is_main' => true,
+                    'is_active' => true,
+                    'address' => $user->store_address ?? 'Alamat belum diatur'
+                ]);
+            }
+            $branchId = $branch->id;
+        }
+        
+        return $branchId;
     }
 
     public function updateStore(Request $request)
@@ -58,6 +78,7 @@ class PosInternalApiController extends Controller
             'store_type' => $request->store_type ?? $user->store_type,
             'store_address' => $request->store_address ?? $user->store_address,
             'store_phone' => $request->store_phone ?? $user->store_phone,
+            'is_ppob_enabled' => $request->has('is_ppob_enabled') ? $request->is_ppob_enabled : $user->is_ppob_enabled,
         ];
 
         // If phone changed, update both phone and derived email
@@ -85,10 +106,20 @@ class PosInternalApiController extends Controller
         $user = $this->authenticate($request);
         if (!$user) return response()->json(['success' => false, 'message' => 'Unauthorized'], 401);
 
-        $product = Product::create([
+        $categoryId = $request->category_id;
+        if (!$categoryId) {
+            $defaultCategory = \App\Models\Category::firstOrCreate(
+                ['user_id' => $user->id, 'name' => 'Umum'],
+                ['description' => 'Kategori Bawaan']
+            );
+            $categoryId = $defaultCategory->id;
+        }
+
+        $product = \App\Models\Product::create([
             'user_id' => $user->id,
-            'category_id' => $request->category_id,
+            'category_id' => $categoryId,
             'name' => $request->name,
+            'slug' => \Illuminate\Support\Str::slug($request->name) . '-' . time(),
             'price' => $request->price,
             'cost_price' => $request->cost_price ?? 0,
             'stock' => $request->stock ?? 0,
@@ -105,8 +136,14 @@ class PosInternalApiController extends Controller
         $user = $this->authenticate($request);
         if (!$user) return response()->json(['success' => false, 'message' => 'Unauthorized'], 401);
 
-        $product = Product::where('user_id', $user->id)->findOrFail($id);
-        $product->update($request->only(['category_id', 'name', 'price', 'cost_price', 'stock', 'description', 'sku', 'is_active']));
+        $product = \App\Models\Product::where('user_id', $user->id)->findOrFail($id);
+        
+        $updateData = $request->only(['category_id', 'name', 'price', 'cost_price', 'stock', 'description', 'sku', 'is_active']);
+        if ($request->name && $request->name !== $product->name) {
+            $updateData['slug'] = \Illuminate\Support\Str::slug($request->name) . '-' . time();
+        }
+        
+        $product->update($updateData);
 
         return response()->json(['success' => true, 'data' => $product]);
     }
@@ -177,7 +214,7 @@ class PosInternalApiController extends Controller
         $paymentMethod = $request->input('payment_method', 'Cash');
         
         // Identify Branch: from Cashier's assigned branch or request (for Owner)
-        $branchId = $user->role === 'cashier' ? $user->branch_id : $request->input('branch_id');
+        $branchId = $this->resolveBranchId($request, $user);
 
         if (!$branchId) {
             return response()->json(['success' => false, 'message' => 'Cabang tidak teridentifikasi'], 400);
@@ -256,7 +293,7 @@ class PosInternalApiController extends Controller
         $user = $this->authenticate($request);
         if (!$user) return response()->json(['error' => 'Unauthorized'], 401);
 
-        $branchId = $user->role === 'cashier' ? $user->branch_id : $request->input('branch_id');
+        $branchId = $this->resolveBranchId($request, $user);
         $reportService = new \App\Services\ReportService();
         
         $profitStats = $reportService->getProfitLossSummary($user->id, $branchId);
@@ -292,7 +329,7 @@ class PosInternalApiController extends Controller
 
         $productCode = $request->input('product_code');
         $customerNumber = $request->input('customer_number');
-        $branchId = $user->role === 'cashier' ? $user->branch_id : $request->input('branch_id');
+        $branchId = $this->resolveBranchId($request, $user);
 
         try {
             $ppobService = new \App\Services\PpobService();

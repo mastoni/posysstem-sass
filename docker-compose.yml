@@ -1,0 +1,65 @@
+version: '3.8'
+
+services:
+  # POS Application (PHP-FPM)
+  pos-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pos-system-app
+    restart: unless-stopped
+    working_dir: /var/www
+    environment:
+      - APP_ENV=local # Ubah ke production saat di VPS
+      - APP_DEBUG=true
+    volumes:
+      - ./:/var/www
+      - ./storage:/var/www/storage
+      - ./bootstrap/cache:/var/www/bootstrap/cache
+    networks:
+      - pos-network
+      - openwisp_default
+
+  # POS Web Server (Nginx)
+  pos-web:
+    image: nginx:alpine
+    container_name: pos-system-web
+    restart: unless-stopped
+    ports:
+      - "${POS_PORT:-8081}:80"
+    volumes:
+      - ./:/var/www
+      - ./docker/nginx/conf.d/:/etc/nginx/conf.d/
+    networks:
+      - pos-network
+      - openwisp_default
+    depends_on:
+      - pos-app
+
+  # POS Database (MySQL)
+  pos-db:
+    image: mysql:8.0
+    container_name: pos-system-db
+    restart: unless-stopped
+    command: --default-authentication-plugin=mysql_native_password
+    environment:
+      MYSQL_DATABASE: ${DB_DATABASE:-laravel_possassdb}
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-secret_root}
+      MYSQL_USER: ${DB_USERNAME:-pos_user}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-pos_password}
+    volumes:
+      - pos-db-data:/var/lib/mysql
+    networks:
+      - pos-network
+
+networks:
+  pos-network:
+    driver: bridge
+  openwisp_default:
+    # Di localhost, ganti ke 'external: false' jika belum ada network OpenWISP
+    # Di VPS, biarkan 'external: true'
+    external: true 
+
+volumes:
+  pos-db-data:
+

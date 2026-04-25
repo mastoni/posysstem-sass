@@ -11,7 +11,7 @@ class Product extends Model
 {
     use HasTenant;
 
-    protected $fillable = ['user_id', 'category_id', 'name', 'slug', 'sku', 'price', 'stock', 'image', 'is_active'];
+    protected $fillable = ['user_id', 'category_id', 'name', 'slug', 'sku', 'price', 'cost_price', 'stock', 'image', 'is_active', 'description'];
 
     public function user(): BelongsTo 
     { 
