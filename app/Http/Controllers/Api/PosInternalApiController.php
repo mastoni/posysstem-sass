@@ -28,17 +28,22 @@ class PosInternalApiController extends Controller
         $email = $phone . '@sembok.id';
         
         // Use firstOrCreate to prevent race conditions and handle duplicate entry errors
-        $user = User::firstOrCreate(
-            ['email' => $email],
-            [
-                'name' => $request->header('X-User-Name', 'Pemilik Toko'),
-                'password' => \Illuminate\Support\Facades\Hash::make(\Illuminate\Support\Str::random(24)),
-                'role' => 'tenant',
-                'store_name' => $request->header('X-Store-Name', 'Toko Saya'),
-                'billing_customer_id' => $request->header('X-Customer-ID'),
-                'is_setup_completed' => true
-            ]
-        );
+        try {
+            $user = User::firstOrCreate(
+                ['email' => $email],
+                [
+                    'name' => $request->header('X-User-Name', 'Pemilik Toko'),
+                    'password' => \Illuminate\Support\Facades\Hash::make(\Illuminate\Support\Str::random(24)),
+                    'role' => 'tenant',
+                    'store_name' => $request->header('X-Store-Name', 'Toko Saya'),
+                    'billing_customer_id' => $request->header('X-Customer-ID'),
+                    'is_setup_completed' => true
+                ]
+            );
+        } catch (\Illuminate\Database\UniqueConstraintViolationException $e) {
+            // Handle race condition: if created by another request, just fetch it
+            $user = User::where('email', $email)->first();
+        }
 
         // IMPORTANT: Login the user so Global Scopes can detect the tenant
         auth()->login($user);
@@ -115,6 +120,8 @@ class PosInternalApiController extends Controller
             $categoryId = $defaultCategory->id;
         }
 
+        $imagePath = $this->handleBase64Image($request->image, $user->id);
+
         $product = \App\Models\Product::create([
             'user_id' => $user->id,
             'category_id' => $categoryId,
@@ -124,6 +131,7 @@ class PosInternalApiController extends Controller
             'cost_price' => $request->cost_price ?? 0,
             'stock' => $request->stock ?? 0,
             'description' => $request->description,
+            'image' => $imagePath,
             'sku' => $request->sku ?? ('P' . time()),
             'is_active' => true
         ]);
@@ -139,6 +147,11 @@ class PosInternalApiController extends Controller
         $product = \App\Models\Product::where('user_id', $user->id)->findOrFail($id);
         
         $updateData = $request->only(['category_id', 'name', 'price', 'cost_price', 'stock', 'description', 'sku', 'is_active']);
+        
+        if ($request->image) {
+            $updateData['image'] = $this->handleBase64Image($request->image, $user->id);
+        }
+
         if ($request->name && $request->name !== $product->name) {
             $updateData['slug'] = \Illuminate\Support\Str::slug($request->name) . '-' . time();
         }
@@ -176,6 +189,7 @@ class PosInternalApiController extends Controller
         $category = Category::create([
             'user_id' => $user->id,
             'name' => $request->name,
+            'slug' => \Illuminate\Support\Str::slug($request->name) . '-' . time(),
             'description' => $request->description
         ]);
 
@@ -188,7 +202,13 @@ class PosInternalApiController extends Controller
         if (!$user) return response()->json(['success' => false, 'message' => 'Unauthorized'], 401);
 
         $category = Category::where('user_id', $user->id)->findOrFail($id);
-        $category->update($request->only(['name', 'description']));
+        
+        $updateData = $request->only(['name', 'description']);
+        if ($request->name && $request->name !== $category->name) {
+            $updateData['slug'] = \Illuminate\Support\Str::slug($request->name) . '-' . time();
+        }
+        
+        $category->update($updateData);
 
         return response()->json(['success' => true, 'data' => $category]);
     }
@@ -288,26 +308,65 @@ class PosInternalApiController extends Controller
         return response()->json(['success' => true, 'data' => $orders]);
     }
 
-    public function getFullReports(Request $request)
+    public function cancelOrder(Request $request, $id)
     {
         $user = $this->authenticate($request);
         if (!$user) return response()->json(['error' => 'Unauthorized'], 401);
 
-        $branchId = $this->resolveBranchId($request, $user);
-        $reportService = new \App\Services\ReportService();
-        
-        $profitStats = $reportService->getProfitLossSummary($user->id, $branchId);
+        try {
+            DB::beginTransaction();
+
+            $order = Order::where('user_id', $user->id)->findOrFail($id);
+            
+            if ($order->status === 'cancelled') {
+                return response()->json(['success' => false, 'message' => 'Pesanan sudah dibatalkan'], 400);
+            }
+
+            // Restore Stock
+            $inventoryService = new \App\Services\InventoryService();
+            foreach ($order->items as $item) {
+                // If using FIFO/Batch, we might need more complex logic, 
+                // but for now let's just increment the product stock or specific batch if stored
+                if ($item->stock_batch_id) {
+                    $batch = \App\Models\StockBatch::find($item->stock_batch_id);
+                    if ($batch) {
+                        $batch->increment('quantity', $item->quantity);
+                    }
+                } else {
+                    $item->product->increment('stock', $item->quantity);
+                }
+            }
+
+            $order->update(['status' => 'cancelled']);
+
+            DB::commit();
+            return response()->json(['success' => true, 'message' => 'Pesanan berhasil dibatalkan']);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    public function getFullReports(Request $request)
+    {
+        $user = $this->authenticate($request);
+        if (!$user) return response()->json(['success' => false, 'message' => 'Unauthorized'], 401);
 
         $stats = [
-            'profit_loss' => $profitStats,
-            'today_sales' => Order::where('user_id', $user->id)->whereDate('created_at', today())->sum('total_amount'),
-            'total_orders' => Order::where('user_id', $user->id)->count(),
-            'recent_orders' => Order::where('user_id', $user->id)->latest()->limit(10)->get(),
-            'daily_trend' => Order::where('user_id', $user->id)
+            'total_orders' => \App\Models\Order::where('user_id', $user->id)->count(),
+            'total_sales' => \App\Models\Order::where('user_id', $user->id)->sum('total_amount'),
+            'recent_orders' => \App\Models\Order::where('user_id', $user->id)->latest()->take(10)->get(),
+            'daily_trend' => \App\Models\Order::where('user_id', $user->id)
                 ->where('created_at', '>=', now()->subDays(7))
                 ->select(DB::raw('DATE(created_at) as date'), DB::raw('SUM(total_amount) as total'))
                 ->groupBy('date')
-                ->get()
+                ->get(),
+            'profit_loss' => [
+                'gross_profit' => \App\Models\Order::where('user_id', $user->id)->sum('total_amount') - 
+                                \App\Models\OrderItem::whereHas('order', fn($q) => $q->where('user_id', $user->id))
+                                ->join('products', 'order_items.product_id', '=', 'products.id')
+                                ->sum(DB::raw('order_items.quantity * products.cost_price'))
+            ]
         ];
 
         return response()->json(['success' => true, 'data' => $stats]);
@@ -341,6 +400,25 @@ class PosInternalApiController extends Controller
             ]);
         } catch (\Exception $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    private function handleBase64Image($base64String, $userId)
+    {
+        if (!$base64String || !str_starts_with($base64String, 'data:image')) {
+            return $base64String;
+        }
+
+        try {
+            $format = explode('/', explode(':', substr($base64String, 0, strpos($base64String, ';')))[1])[1];
+            $image = str_replace(' ', '+', explode(',', $base64String)[1]);
+            $imageName = 'product_' . $userId . '_' . time() . '.' . $format;
+            
+            \Illuminate\Support\Facades\Storage::disk('public')->put($imageName, base64_decode($image));
+            
+            return $imageName;
+        } catch (\Exception $e) {
+            return null;
         }
     }
 }

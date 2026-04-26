@@ -28,6 +28,7 @@ Route::prefix('api/internal/pos')->group(function () {
 
     Route::post('/checkout', [PosInternalApiController::class, 'checkout']);
     Route::get('/orders', [PosInternalApiController::class, 'getOrders']);
+    Route::post('/orders/{id}/cancel', [PosInternalApiController::class, 'cancelOrder']);
     Route::post('/update-store', [PosInternalApiController::class, 'updateStore']);
     Route::get('/reports', [PosInternalApiController::class, 'getFullReports']);
 });
