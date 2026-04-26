@@ -346,39 +346,69 @@ class PosInternalApiController extends Controller
         $user = $this->authenticate($request);
         if (!$user) return response()->json(['error' => 'Unauthorized'], 401);
 
+        $reason      = $request->input('reason', 'Tidak ada alasan');
+        $returnType  = $request->input('return_type', 'full'); // 'full' or 'partial'
+        $isReturn    = $request->boolean('is_return', false);  // true = retur pasca-jual, false = batal biasa
+
         try {
             DB::beginTransaction();
 
-            $order = Order::where('user_id', $user->id)->findOrFail($id);
-            
-            if ($order->status === 'cancelled') {
-                return response()->json(['success' => false, 'message' => 'Pesanan sudah dibatalkan'], 400);
+            $order = Order::where('user_id', $user->id)
+                ->with(['items.product', 'items.stockBatch'])
+                ->findOrFail($id);
+
+            if (in_array($order->status, ['cancelled', 'returned'])) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Pesanan sudah ' . ($order->status === 'returned' ? 'diretur' : 'dibatalkan')
+                ], 400);
             }
 
-            // Restore Stock
-            $inventoryService = new \App\Services\InventoryService();
+            // Restore stock for each item
+            $restoredItems = [];
             foreach ($order->items as $item) {
-                // If using FIFO/Batch, we might need more complex logic, 
-                // but for now let's just increment the product stock or specific batch if stored
-                if ($item->stock_batch_id) {
-                    $batch = \App\Models\StockBatch::find($item->stock_batch_id);
-                    if ($batch) {
-                        $batch->increment('quantity', $item->quantity);
-                    }
+                if ($item->stock_batch_id && $item->stockBatch) {
+                    $item->stockBatch->increment('quantity', $item->quantity);
                 } else {
-                    $item->product->increment('stock', $item->quantity);
+                    if ($item->product) {
+                        $item->product->increment('stock', $item->quantity);
+                        $restoredItems[] = [
+                            'product'  => $item->product->name,
+                            'quantity' => $item->quantity,
+                        ];
+                    }
                 }
             }
 
-            $order->update(['status' => 'cancelled']);
+            $newStatus = $isReturn ? 'returned' : 'cancelled';
+
+            $order->update([
+                'status'        => $newStatus,
+                'cancel_reason' => $reason,
+                'cancelled_at'  => now(),
+                'return_type'   => $returnType,
+                'notes'         => ($order->notes ? $order->notes . "\n" : '') 
+                                  . "[{$newStatus}] " . now()->format('d/m/Y H:i') . " - {$reason}",
+            ]);
 
             DB::commit();
-            return response()->json(['success' => true, 'message' => 'Pesanan berhasil dibatalkan']);
+
+            $label = $isReturn ? 'Retur' : 'Pembatalan';
+            return response()->json([
+                'success'        => true,
+                'message'        => "{$label} berhasil. Stok dikembalikan.",
+                'status'         => $newStatus,
+                'reason'         => $reason,
+                'restored_items' => $restoredItems,
+                'cancelled_at'   => now()->toDateTimeString(),
+            ]);
+
         } catch (\Exception $e) {
             DB::rollBack();
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
     }
+
 
     public function getFullReports(Request $request)
     {
