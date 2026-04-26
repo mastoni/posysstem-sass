@@ -1,4 +1,3 @@
-version: '3.8'
 
 services:
   # POS Application (PHP-FPM)
@@ -10,15 +9,15 @@ services:
     restart: unless-stopped
     working_dir: /var/www
     environment:
-      - APP_ENV=local # Ubah ke production saat di VPS
-      - APP_DEBUG=true
+      - APP_ENV=production
+      - APP_DEBUG=false
     volumes:
       - ./:/var/www
       - ./storage:/var/www/storage
       - ./bootstrap/cache:/var/www/bootstrap/cache
     networks:
       - pos-network
-      - openwisp_default
+      - docker-openwisp_default
 
   # POS Web Server (Nginx)
   pos-web:
@@ -32,7 +31,7 @@ services:
       - ./docker/nginx/conf.d/:/etc/nginx/conf.d/
     networks:
       - pos-network
-      - openwisp_default
+      - docker-openwisp_default
     depends_on:
       - pos-app
 
@@ -55,10 +54,8 @@ services:
 networks:
   pos-network:
     driver: bridge
-  openwisp_default:
-    # Di localhost, ganti ke 'external: false' jika belum ada network OpenWISP
-    # Di VPS, biarkan 'external: true'
-    external: true 
+  docker-openwisp_default:
+    external: true  # Nama network OpenWISP di VPS (folder: docker-openwisp)
 
 volumes:
   pos-db-data:
