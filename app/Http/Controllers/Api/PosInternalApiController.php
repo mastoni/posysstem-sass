@@ -252,31 +252,64 @@ class PosInternalApiController extends Controller
                 'status' => 'paid',
             ]);
 
-            $inventoryService = new \App\Services\InventoryService();
-
             foreach ($items as $item) {
-                // FIFO Stock Reduction
-                $batchesUsed = $inventoryService->reduceStock($item['id'], $branchId, $item['quantity']);
-                
-                if (empty($batchesUsed)) {
-                    // Fallback for non-FIFO items or if stock is empty (might need adjustment based on business rules)
-                    OrderItem::create([
-                        'order_id' => $order->id,
-                        'product_id' => $item['id'],
-                        'quantity' => $item['quantity'],
-                        'price' => $item['price'],
-                    ]);
-                } else {
+                $product = Product::where('user_id', $user->role === 'cashier' ? $user->owner_id : $user->id)
+                    ->find($item['id']);
+
+                if (!$product) {
+                    DB::rollBack();
+                    return response()->json(['success' => false, 'message' => 'Produk tidak ditemukan: ID ' . $item['id']], 400);
+                }
+
+                // Try FIFO batch reduction first, fall back to direct product stock
+                $hasBatches = \App\Models\StockBatch::where('product_id', $item['id'])
+                    ->where('quantity_remaining', '>', 0)
+                    ->exists();
+
+                if ($hasBatches) {
+                    $inventoryService = new \App\Services\InventoryService();
+                    $batchesUsed = $inventoryService->reduceStock($item['id'], $branchId, $item['quantity']);
+
                     foreach ($batchesUsed as $batchData) {
                         OrderItem::create([
                             'order_id' => $order->id,
                             'product_id' => $item['id'],
                             'quantity' => $batchData['quantity'],
                             'price' => $item['price'],
+                            'subtotal' => $item['price'] * $batchData['quantity'],
                             'stock_batch_id' => $batchData['batch_id'],
                             'cost_price' => $batchData['cost_price'],
                         ]);
                     }
+
+                    // If still items left after batches, create remaining as one item
+                    $batchedQty = array_sum(array_column($batchesUsed, 'quantity'));
+                    if ($batchedQty < $item['quantity']) {
+                        OrderItem::create([
+                            'order_id' => $order->id,
+                            'product_id' => $item['id'],
+                            'quantity' => $item['quantity'] - $batchedQty,
+                            'price' => $item['price'],
+                            'subtotal' => $item['price'] * ($item['quantity'] - $batchedQty),
+                        ]);
+                    }
+                } else {
+                    // Simple mode: direct stock decrement on products table
+                    if ($product->stock < $item['quantity']) {
+                        DB::rollBack();
+                        return response()->json(['success' => false, 'message' => 'Stok tidak mencukupi untuk: ' . $product->name], 400);
+                    }
+
+                    $product->decrement('stock', $item['quantity']);
+
+                    OrderItem::create([
+                        'order_id' => $order->id,
+                        'product_id' => $item['id'],
+                        'quantity' => $item['quantity'],
+                        'price' => $item['price'],
+                        'subtotal' => $item['price'] * $item['quantity'],
+                        'cost_price' => $product->cost_price ?? 0,
+                    ]);
                 }
             }
 
@@ -354,7 +387,13 @@ class PosInternalApiController extends Controller
 
         $stats = [
             'total_orders' => \App\Models\Order::where('user_id', $user->id)->count(),
-            'total_sales' => \App\Models\Order::where('user_id', $user->id)->sum('total_amount'),
+            'total_sales'  => \App\Models\Order::where('user_id', $user->id)->sum('total_amount'),
+            'today_orders' => \App\Models\Order::where('user_id', $user->id)
+                ->whereDate('created_at', now()->toDateString())
+                ->count(),
+            'today_sales'  => \App\Models\Order::where('user_id', $user->id)
+                ->whereDate('created_at', now()->toDateString())
+                ->sum('total_amount'),
             'recent_orders' => \App\Models\Order::where('user_id', $user->id)->latest()->take(10)->get(),
             'daily_trend' => \App\Models\Order::where('user_id', $user->id)
                 ->where('created_at', '>=', now()->subDays(7))
