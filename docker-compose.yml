@@ -17,7 +17,6 @@ services:
       - ./bootstrap/cache:/var/www/bootstrap/cache
     networks:
       - pos-network
-      - docker-openwisp_default
 
   # POS Web Server (Nginx)
   pos-web:
@@ -31,7 +30,6 @@ services:
       - ./docker/nginx/conf.d/:/etc/nginx/conf.d/
     networks:
       - pos-network
-      - docker-openwisp_default
     depends_on:
       - pos-app
 
@@ -54,8 +52,6 @@ services:
 networks:
   pos-network:
     driver: bridge
-  docker-openwisp_default:
-    external: true  # Nama network OpenWISP di VPS (folder: docker-openwisp)
 
 volumes:
   pos-db-data:
