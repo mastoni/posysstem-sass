@@ -472,6 +472,30 @@ class PosInternalApiController extends Controller
         }
     }
 
+    public function getPublicProduct($id)
+    {
+        // Find product with owner info (to get store name)
+        // We use withoutGlobalScopes to ensure it's found even if no one is logged in
+        $product = Product::with('user')->find($id);
+        
+        if (!$product) {
+            return response()->json(['success' => false, 'message' => 'Produk tidak ditemukan'], 404);
+        }
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'id' => $product->id,
+                'name' => $product->name,
+                'price' => $product->price,
+                'description' => $product->description,
+                'image' => $product->image,
+                'store_name' => $product->user->store_name ?? 'Toko Sembok',
+                'store_phone' => $product->user->phone ?? '',
+            ]
+        ]);
+    }
+
     private function handleBase64Image($base64String, $userId)
     {
         if (!$base64String || !str_starts_with($base64String, 'data:image')) {

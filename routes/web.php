@@ -31,6 +31,9 @@ Route::prefix('api/internal/pos')->group(function () {
     Route::post('/orders/{id}/cancel', [PosInternalApiController::class, 'cancelOrder']);
     Route::post('/update-store', [PosInternalApiController::class, 'updateStore']);
     Route::get('/reports', [PosInternalApiController::class, 'getFullReports']);
+    
+    // Public Access (No Auth Required for Catalog Sharing)
+    Route::get('/public/product/{id}', [PosInternalApiController::class, 'getPublicProduct']);
 });
 
 Route::middleware(['auth'])->group(function () {
